@@ -110,3 +110,40 @@ def save_plugin_enabled(plugin_name: str, enabled: bool) -> None:
     plugins_cfg[plugin_name] = enabled
     data["plugins_enabled"] = plugins_cfg
     CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+
+
+def get_voice_name() -> str:
+    """Return the configured Gemini Live voice name, defaulting to 'Fenrir'."""
+    return load_api_keys().get("voice_name", "Fenrir") or "Fenrir"
+
+
+def save_voice_name(voice_name: str) -> None:
+    """Persist Gemini Live voice name to config."""
+    ensure_config_dir()
+    data: dict = {}
+    if CONFIG_FILE.exists():
+        try:
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    data["voice_name"] = voice_name.strip() or "Fenrir"
+    CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+
+
+def get_llm_model() -> str:
+    """Return configured local LLM model name, defaulting to 'qwen2.5:7b'."""
+    return load_api_keys().get("llm_model", "qwen2.5:7b") or "qwen2.5:7b"
+
+
+def save_llm_model(model_name: str) -> None:
+    """Persist local LLM model name to config."""
+    ensure_config_dir()
+    data: dict = {}
+    if CONFIG_FILE.exists():
+        try:
+            data = json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            data = {}
+    data["llm_model"] = model_name.strip() or "qwen2.5:7b"
+    CONFIG_FILE.write_text(json.dumps(data, indent=4), encoding="utf-8")
+

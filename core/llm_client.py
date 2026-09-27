@@ -41,7 +41,7 @@ CONFIG_PATH = BASE_DIR / "config" / "api_keys.json"
 
 _DEFAULTS = {
     "llm_url":      "http://localhost:11434",
-    "llm_model":    "llama3.2",
+    "llm_model":    "qwen2.5:7b",
     "llm_provider": "ollama",   # "ollama" | "openai"
 }
 

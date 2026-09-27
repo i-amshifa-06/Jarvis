@@ -1,6 +1,1 @@
-WhatsApp Process Name: WhatsApp.Root.exe
-PID: 15940
-Window Title: WhatsApp
-Class Name: WinUIDesktopWin32WindowClass
-Framework: Win32
-UIA Availability: YES
+ERROR: WhatsApp Desktop window not found in current session.

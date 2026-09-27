@@ -71,7 +71,7 @@ from actions.background_monitor import (
     add_monitor, remove_monitor, list_monitors, check_all as monitor_check_all,
 )
 from actions.web_search        import _news as _fetch_news_sync
-from memory.config_manager     import get_brief_enabled
+from memory.config_manager     import get_brief_enabled, get_voice_name
 from core.plugin_loader        import discover_plugins
 
 def get_base_dir():
@@ -749,7 +749,7 @@ class JarvisLive:
             speech_config=types.SpeechConfig(
                 voice_config=types.VoiceConfig(
                     prebuilt_voice_config=types.PrebuiltVoiceConfig(
-                        voice_name="Charon"
+                        voice_name=get_voice_name()
                     )
                 )
             ),

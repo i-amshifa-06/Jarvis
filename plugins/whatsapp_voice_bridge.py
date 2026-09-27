@@ -7,6 +7,47 @@ import sounddevice as sd
 from enum import Enum
 from plugins.whatsapp_desktop_call import WhatsAppDesktopController
 
+_shared_stt = None
+_shared_tts = None
+
+def get_default_stt():
+    global _shared_stt
+    if _shared_stt is None:
+        try:
+            from core.stt import WhisperSTT
+            _shared_stt = WhisperSTT(model_name="base")
+        except Exception as e:
+            print(f"[WhatsAppVoiceBridge] Failed to initialize default WhisperSTT: {e}")
+    return _shared_stt
+
+def get_default_tts():
+    global _shared_tts
+    if _shared_tts is None:
+        try:
+            from core.tts import create_tts_player
+            from memory.config_manager import load_api_keys
+            cfg = load_api_keys()
+            _shared_tts = create_tts_player(cfg)
+        except Exception as e:
+            print(f"[WhatsAppVoiceBridge] Failed to initialize default TTSPlayer: {e}")
+    return _shared_tts
+
+def _default_llm_func(text: str) -> str:
+    try:
+        from core.llm_client import call_llm_stream
+        messages = [
+            {"role": "system", "content": "You are JARVIS. Have a brief voice call conversation."}, 
+            {"role": "user", "content": text}
+        ]
+        out = ""
+        for msg in call_llm_stream(messages):
+            if isinstance(msg, dict) and msg.get('type') == 'sentence':
+                out += msg['text'] + " "
+        return out.strip()
+    except Exception as e:
+        print(f"[WhatsAppVoiceBridge] LLM error: {e}")
+        return "I'm having trouble thinking right now."
+
 class CallState(Enum):
     IDLE = "IDLE"
     CALLING = "CALLING"
@@ -37,6 +78,7 @@ class WhatsAppVoiceBridge:
         
         self.wa_mic_device = None
         self.wa_speaker_device = None
+        self._prev_tts_device = None
         
         self._stop_event = threading.Event()
         self._audio_thread = None
@@ -69,24 +111,75 @@ class WhatsAppVoiceBridge:
     def _detect_virtual_audio_cable(self):
         try:
             devices = sd.query_devices()
-            input_cable = None
-            output_cable = None
-            output_cable_name = None
+            apis = sd.query_hostapis()
+            
+            best_output = None
+            best_output_score = -1
+            best_output_name = None
+            
+            best_input = None
+            best_input_score = -1
+            
             for i, d in enumerate(devices):
                 name = d['name'].lower()
-                if 'cable' in name or 'virtual' in name or 'voicemeeter' in name:
-                    if d['max_input_channels'] > 0 and input_cable is None:
-                        input_cable = i
-                    if d['max_output_channels'] > 0 and output_cable is None:
-                        output_cable = i
-                        output_cable_name = d['name']
-            return input_cable, output_cable, output_cable_name
+                api_idx = d.get('hostapi', 0)
+                api_name = apis[api_idx]['name'].lower() if api_idx < len(apis) else ""
+                
+                # Check for output device (JARVIS TTS -> CABLE Input)
+                if d['max_output_channels'] > 0:
+                    score = -1
+                    if 'cable input' in name:
+                        if 'wasapi' in api_name:
+                            score = 100
+                        elif 'directsound' in api_name:
+                            score = 80
+                        elif 'mme' in api_name:
+                            score = 70
+                        else:
+                            score = 60
+                    elif 'cable in' in name or 'virtual audio' in name or 'vb-audio' in name or 'voicemeeter' in name:
+                        if '16ch' in name:
+                            score = 40 if 'wasapi' in api_name else 30
+                        else:
+                            score = 50 if 'wasapi' in api_name else 35
+                    elif 'virtual' in name or 'cable' in name:
+                        score = 20
+                    
+                    if score > best_output_score:
+                        best_output_score = score
+                        best_output = i
+                        best_output_name = d['name']
+                        
+                # Check for input device (CABLE Output -> WhatsApp Mic)
+                if d['max_input_channels'] > 0:
+                    score = -1
+                    if 'cable output' in name:
+                        if 'wasapi' in api_name:
+                            score = 100
+                        elif 'directsound' in api_name:
+                            score = 80
+                        elif 'mme' in api_name:
+                            score = 70
+                        else:
+                            score = 60
+                    elif 'cable out' in name or 'virtual audio' in name or 'vb-audio' in name or 'voicemeeter' in name:
+                        score = 50 if 'wasapi' in api_name else 35
+                    elif 'virtual' in name or 'cable' in name:
+                        score = 20
+                        
+                    if score > best_input_score:
+                        best_input_score = score
+                        best_input = i
+                        
+            return best_input, best_output, best_output_name
         except Exception:
             return None, None, None
 
     def _enable_whatsapp_tts_routing(self, out_cable):
         try:
             import core.tts
+            if self._prev_tts_device is None:
+                self._prev_tts_device = getattr(core.tts, 'TTS_OUTPUT_DEVICE', None)
             core.tts.TTS_OUTPUT_DEVICE = out_cable
             self.log(f"[TTS] routing enabled (device {out_cable})")
         except ImportError:
@@ -95,7 +188,8 @@ class WhatsAppVoiceBridge:
     def _disable_whatsapp_tts_routing(self):
         try:
             import core.tts
-            core.tts.TTS_OUTPUT_DEVICE = None
+            core.tts.TTS_OUTPUT_DEVICE = self._prev_tts_device
+            self._prev_tts_device = None
             self.log("[TTS] routing restored")
         except ImportError:
             pass
@@ -104,9 +198,9 @@ class WhatsAppVoiceBridge:
         if self.state in [CallState.CONVERSATION, CallState.CONNECTING, CallState.CALLING_UNVERIFIED, CallState.CONNECTED_UNVERIFIED]:
             return "[JARVIS-WA] Already in conversation."
             
-        self.stt_engine = stt_engine
-        self.tts_engine = tts_engine
-        self.llm_func = llm_func
+        self.stt_engine = stt_engine if stt_engine is not None else get_default_stt()
+        self.tts_engine = tts_engine if tts_engine is not None else get_default_tts()
+        self.llm_func = llm_func if llm_func is not None else _default_llm_func
 
         self.state = CallState.CALLING
         self.log("[CALL] initiating WhatsApp call")
@@ -165,6 +259,7 @@ class WhatsAppVoiceBridge:
             self.log(f"[JARVIS-AUDIO] WhatsApp TTS output device: {out_name} (Index: {out_cable})")
             logs.append(f"[JARVIS-AUDIO] WhatsApp TTS output device: {out_name} (Index: {out_cable})")
             self.wa_mic_device = out_cable
+            self._enable_whatsapp_tts_routing(out_cable)
             
         self._audio_thread = threading.Thread(target=self._capture_and_process_loop, daemon=True)
         self._audio_thread.start()
@@ -450,30 +545,15 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
         if not contact_name:
             return "Error: Contact name not specified."
             
-        stt_mock = None
-        tts_mock = None
-        llm_mock = None
+        stt = None
+        tts = None
         
         if player and hasattr(player, 'stt'):
-            stt_mock = player.stt
+            stt = player.stt
         if player and hasattr(player, 'tts'):
-            tts_mock = player.tts
+            tts = player.tts
             
-        def _llm_func(text):
-            try:
-                from core.llm_client import call_llm_stream
-                messages = [{"role": "system", "content": "You are JARVIS. Have a brief voice call conversation."}, 
-                            {"role": "user", "content": text}]
-                out = ""
-                for msg in call_llm_stream(messages):
-                    if msg['type'] == 'sentence':
-                        out += msg['text'] + " "
-                return out.strip()
-            except:
-                return "I'm having trouble thinking right now."
-                
-        llm_mock = _llm_func
-        
-        return bridge.start_call_and_bridge(contact_name, stt_mock, tts_mock, llm_mock)
+        return bridge.start_call_and_bridge(contact_name, stt, tts, _default_llm_func)
 
     return "Error: Unknown intent for whatsapp_voice_bridge."
+

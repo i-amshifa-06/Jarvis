@@ -12,20 +12,26 @@ except ImportError:
 
 _OS = platform.system()  # "Windows" | "Darwin" | "Linux"
 
-_SAFE_ROOTS: list[Path] = [
-    Path.home(),
-]
+_CRITICAL_SYSTEM_DIRS = {
+    "c:\\windows", "c:\\windows\\system32", "c:\\program files", "c:\\program files (x86)",
+    "/etc", "/bin", "/sbin", "/usr/bin", "/usr/sbin", "/boot", "/sys", "/proc"
+}
 
 def _is_safe_path(target: Path) -> bool:
-    """Verilen path _SAFE_ROOTS içinde mi? Değilse işlemi reddet."""
+    """
+    Check if target path is safe for operations.
+    Allows all connected drives (C:, D:, E:, F:, external storage, USBs, network mounts, user home),
+    while protecting critical OS system directories from corruption or accidental deletion.
+    """
     try:
         resolved = target.resolve()
-        return any(
-            resolved == root.resolve() or resolved.is_relative_to(root.resolve())
-            for root in _SAFE_ROOTS
-        )
+        resolved_str = str(resolved).lower()
+        for crit in _CRITICAL_SYSTEM_DIRS:
+            if resolved_str == crit or resolved_str.startswith(crit + "\\") or resolved_str.startswith(crit + "/"):
+                return False
+        return True
     except Exception:
-        return False
+        return True
 
 def _get_desktop() -> Path:
     if _OS == "Linux":
@@ -80,20 +86,28 @@ def _resolve_path(raw: str) -> Path:
         "videos":    _get_videos(),
         "home":      Path.home(),
     }
-    raw   = raw.strip().strip('"').strip("'")
+    raw = raw.strip().strip('"').strip("'")
     lower = raw.lower()
+
+    # Strip virtual Explorer shell prefixes like "This PC\" or "Bu Bilgisayar\"
+    if lower.startswith("this pc\\") or lower.startswith("this pc/"):
+        raw = raw[8:].lstrip("\\/")
+        lower = raw.lower()
+    elif lower.startswith("bu bilgisayar\\") or lower.startswith("bu bilgisayar/"):
+        raw = raw[14:].lstrip("\\/")
+        lower = raw.lower()
+
     if lower in shortcuts:
         return shortcuts[lower]
 
-    # "desktop/notlar/a.md" ve "desktop\notlar\a.md" — kisayol + alt yol.
-    # Bu dal olmadan tum dize asagidaki goreli-yol dalina dusuyor ve process'in
-    # CWD'sine gore cozuluyordu.  Proje home disindaysa _is_safe_path reddedip
-    # "Access denied" veriyor; home icindeyse daha kotusu oluyor ve dosya sessizce
-    # projenin icindeki olmayan bir "desktop" klasorune yaziliyordu.
     head, sep, rest = raw.replace("\\", "/").partition("/")
     if sep and head.lower() in shortcuts:
         rest = rest.strip("/")
         return shortcuts[head.lower()] / rest if rest else shortcuts[head.lower()]
+
+    # If it's a bare Windows drive letter (e.g. "D:" or "E:")
+    if _OS == "Windows" and len(raw) == 2 and raw[1] == ":" and raw[0].isalpha():
+        return Path(f"{raw.upper()}\\")
 
     return Path(raw).expanduser()
 

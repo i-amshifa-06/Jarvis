@@ -184,20 +184,31 @@ def _make_pose_detector():
 def _make_face_detector():
     """OpenCV-only fallback: face area grows as the user lowers toward a
     floor-placed camera. Returns fn(frame)->float|None."""
-    cascade = cv2.CascadeClassifier(
-        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-    )
+    try:
+        if hasattr(cv2, "CascadeClassifier") and hasattr(cv2, "data"):
+            cascade = cv2.CascadeClassifier(
+                cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+            )
+            def _signal(frame: np.ndarray):
+                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                small = cv2.resize(gray, (0, 0), fx=0.5, fy=0.5)
+                faces = cascade.detectMultiScale(small, 1.15, 4, minSize=(30, 30))
+                if len(faces) == 0:
+                    return None
+                x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
+                return float(w * h)   # bigger face = closer = down
+            return _signal
+    except Exception:
+        pass
 
-    def _signal(frame: np.ndarray):
+    # Generic frame center luminance/occupancy signal fallback
+    def _fallback_signal(frame: np.ndarray):
         gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        small = cv2.resize(gray, (0, 0), fx=0.5, fy=0.5)
-        faces = cascade.detectMultiScale(small, 1.15, 4, minSize=(30, 30))
-        if len(faces) == 0:
-            return None
-        x, y, w, h = max(faces, key=lambda f: f[2] * f[3])
-        return float(w * h)   # bigger face = closer = down
+        h, w = gray.shape[:2]
+        center = gray[h // 4 : 3 * h // 4, w // 4 : 3 * w // 4]
+        return float(np.mean(center))
 
-    return _signal
+    return _fallback_signal
 
 
 # ── on-frame overlay (ASCII/digits only — cv2.putText can't render more) ────

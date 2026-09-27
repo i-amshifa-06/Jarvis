@@ -91,43 +91,47 @@ class TestWhatsAppDesktopCall(unittest.TestCase):
             self.assertIn("Layer 2 (Keyboard) used.", res)
             mock_instance.start_voice_call.assert_not_called()
 
+    def test_inspect_whatsapp_ui_intent(self):
+        with patch.object(wa_plugin, 'inspect_whatsapp_ui') as mock_inspect:
+            mock_inspect.return_value = {
+                "whatsapp_window": {"Name": "WhatsApp", "BoundingRectangle": (0, 0, 1000, 800)},
+                "display": {"screen_width": 1920, "screen_height": 1080, "scaling_pct": 100},
+                "controls": [{"Name": "Voice call", "ControlType": "ButtonControl"}]
+            }
+            with patch.object(wa_plugin.WhatsAppDesktopController, 'is_whatsapp_running', return_value=True):
+                res = wa_plugin.run({"intent": "inspect_whatsapp_ui"})
+                self.assertIn("WhatsApp UI Inspection", res)
+                self.assertIn("Discovered Controls: 1 items", res)
+
     @patch('time.sleep', return_value=None)
-    def test_spatial_calculations(self, mock_sleep):
+    def test_dynamic_relative_fallback_math(self, mock_sleep):
         controller = wa_plugin.WhatsAppDesktopController()
         
-        # Mock window and its rect for a 1600x852 window at (0,0)
-        from unittest.mock import MagicMock
         mock_window = MagicMock()
         mock_rect = MagicMock()
-        mock_rect.left = 0
-        mock_rect.top = 0
-        mock_rect.right = 1600
-        mock_rect.bottom = 852
+        mock_rect.left = 100
+        mock_rect.top = 50
+        mock_rect.right = 1100 # width = 1000
+        mock_rect.bottom = 850 # height = 800
         mock_window.BoundingRectangle = mock_rect
-        
-        # Force UIA button to not exist to trigger spatial fallback
-        mock_btn = MagicMock()
-        mock_btn.Exists.return_value = False
-        mock_window.ButtonControl.return_value = mock_btn
+        mock_window.Exists.return_value = True
         
         controller.window = mock_window
-        controller.get_call_state = MagicMock(return_value="UNKNOWN")
         
-        with patch.dict('sys.modules', {'pyautogui': MagicMock()}):
-            import pyautogui
-            
-            # Test Voice Call Coordinate Math
-            controller.active_contact = "arun"
-            res = controller.start_voice_call("Arun")
-            pyautogui.click.assert_called_once_with(1452, 70)
-            self.assertEqual(res, "SUCCESS_UNVERIFIED")
+        # Test window_relative_fallback
+        with patch('pyautogui.click') as mock_click:
+            res_voice = wa_plugin.window_relative_fallback(mock_window, "voice")
+            self.assertTrue(res_voice)
+            # target_x = 100 + 1000 * 0.88 = 980
+            # target_y = 50 + 800 * 0.055 = 94
+            mock_click.assert_called_once_with(980, 94)
 
-            # Test Video Call Coordinate Math
-            pyautogui.click.reset_mock()
-            controller.active_contact = "arun"
-            res_video = controller.start_video_call("Arun")
-            pyautogui.click.assert_called_once_with(1395, 70)
-            self.assertEqual(res_video, "SUCCESS_UNVERIFIED")
+            mock_click.reset_mock()
+            res_video = wa_plugin.window_relative_fallback(mock_window, "video")
+            self.assertTrue(res_video)
+            # target_x = 100 + 1000 * 0.82 = 920
+            # target_y = 50 + 800 * 0.055 = 94
+            mock_click.assert_called_once_with(920, 94)
 
 if __name__ == '__main__':
     unittest.main()

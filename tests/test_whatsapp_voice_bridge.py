@@ -169,16 +169,13 @@ class TestWhatsAppVoiceBridge(unittest.TestCase):
         import core.tts
         core.tts.TTS_OUTPUT_DEVICE = None
         self.bridge.start_call_and_bridge("Arun", self.stt, self.tts, self.llm)
-        self.assertIsNone(core.tts.TTS_OUTPUT_DEVICE) # Routing is deferred to VAD
-        # Simulate VAD manual routing
-        self.bridge._enable_whatsapp_tts_routing(self.bridge.wa_mic_device)
-        self.assertEqual(core.tts.TTS_OUTPUT_DEVICE, 2)
+        self.assertEqual(core.tts.TTS_OUTPUT_DEVICE, 2) # Enabled immediately on call connect
 
     @patch('threading.Thread')
     def test_stop_restores_normal_routing(self, mock_thread):
         import core.tts
+        core.tts.TTS_OUTPUT_DEVICE = None
         self.bridge.start_call_and_bridge("Arun", self.stt, self.tts, self.llm)
-        self.bridge._enable_whatsapp_tts_routing(self.bridge.wa_mic_device)
         self.assertEqual(core.tts.TTS_OUTPUT_DEVICE, 2)
         self.bridge.stop_conversation()
         self.assertIsNone(core.tts.TTS_OUTPUT_DEVICE)
@@ -186,8 +183,8 @@ class TestWhatsAppVoiceBridge(unittest.TestCase):
     @patch('threading.Thread')
     def test_hangup_restores_normal_routing(self, mock_thread):
         import core.tts
+        core.tts.TTS_OUTPUT_DEVICE = None
         self.bridge.start_call_and_bridge("Arun", self.stt, self.tts, self.llm)
-        self.bridge._enable_whatsapp_tts_routing(self.bridge.wa_mic_device)
         self.assertEqual(core.tts.TTS_OUTPUT_DEVICE, 2)
         self.bridge.hang_up()
         self.assertIsNone(core.tts.TTS_OUTPUT_DEVICE)
@@ -203,7 +200,10 @@ class TestWhatsAppVoiceBridge(unittest.TestCase):
 
     def test_exception_restores_normal_routing(self):
         import core.tts
-        core.tts.TTS_OUTPUT_DEVICE = 2
+        core.tts.TTS_OUTPUT_DEVICE = None
+        self.bridge._prev_tts_device = None
+        self.bridge._enable_whatsapp_tts_routing(2)
+        self.assertEqual(core.tts.TTS_OUTPUT_DEVICE, 2)
         
         # Trigger an exception in the audio loop directly, and set stop_event in time.sleep to break retry loop
         def mock_sleep(*args, **kwargs):
@@ -214,6 +214,57 @@ class TestWhatsAppVoiceBridge(unittest.TestCase):
             self.bridge._capture_and_process_loop()
             
         self.assertIsNone(core.tts.TTS_OUTPUT_DEVICE)
+
+    def test_wasapi_cable_detection_priority(self):
+        """Verify _detect_virtual_audio_cable prioritizes WASAPI CABLE Input."""
+        fake_apis = [{'name': 'MME'}, {'name': 'Windows DirectSound'}, {'name': 'Windows WASAPI'}]
+        fake_devices = [
+            {'name': 'CABLE In 16ch (VB-Audio Virtual Cable)', 'hostapi': 0, 'max_input_channels': 0, 'max_output_channels': 16},
+            {'name': 'CABLE Input (VB-Audio Virtual Cable)', 'hostapi': 0, 'max_input_channels': 0, 'max_output_channels': 16},
+            {'name': 'CABLE Input (VB-Audio Virtual Cable)', 'hostapi': 2, 'max_input_channels': 0, 'max_output_channels': 2},
+            {'name': 'CABLE Output (VB-Audio Virtual Cable)', 'hostapi': 0, 'max_input_channels': 16, 'max_output_channels': 0},
+            {'name': 'CABLE Output (VB-Audio Virtual Cable)', 'hostapi': 2, 'max_input_channels': 2, 'max_output_channels': 0},
+        ]
+        with patch('sounddevice.query_devices', return_value=fake_devices), \
+             patch('sounddevice.query_hostapis', return_value=fake_apis):
+            in_dev, out_dev, out_name = whatsapp_voice_bridge.WhatsAppVoiceBridge()._detect_virtual_audio_cable()
+            self.assertEqual(out_dev, 2) # Index 2 is WASAPI CABLE Input
+            self.assertEqual(in_dev, 4)  # Index 4 is WASAPI CABLE Output
+
+    @patch('threading.Thread')
+    def test_run_from_main_without_player_stt_tts_falls_back(self, mock_thread):
+        """Verify run() successfully resolves fallback STT/TTS when player is JarvisUI (no .stt/.tts)."""
+        mock_player = MagicMock(spec=[]) # Has no .stt or .tts attributes
+        with patch('plugins.whatsapp_voice_bridge.get_default_stt') as mock_get_stt, \
+             patch('plugins.whatsapp_voice_bridge.get_default_tts') as mock_get_tts:
+            mock_stt = MagicMock()
+            mock_tts = MagicMock()
+            mock_get_stt.return_value = mock_stt
+            mock_get_tts.return_value = mock_tts
+            
+            res = whatsapp_voice_bridge.run(
+                {"intent": "call_and_talk", "contact_name": "Arun"},
+                player=mock_player
+            )
+            self.assertIn("WhatsApp TTS output device", res)
+            self.assertEqual(self.bridge.stt_engine, mock_stt)
+            self.assertEqual(self.bridge.tts_engine, mock_tts)
+
+    def test_full_stt_llm_tts_pipeline_execution(self):
+        """Verify full pipeline transcribes audio, calls LLM, and speaks TTS."""
+        self.bridge.stt_engine = self.stt
+        self.bridge.tts_engine = self.tts
+        self.bridge.llm_func = self.llm
+        self.stt.transcribe.return_value = "What is the weather?"
+        self.llm.return_value = "It is sunny outside."
+        
+        import numpy as np
+        self.bridge._process_speech(np.zeros(1600))
+        
+        self.stt.transcribe.assert_called_once()
+        self.llm.assert_called_once_with("What is the weather?")
+        self.tts.speak.assert_called_once()
+        self.assertEqual(self.tts.speak.call_args[0][0], "It is sunny outside.")
 
     def test_audio_capture_exception_recovery(self):
         """1. audio capture exception recovery without setting ERROR or hanging up"""

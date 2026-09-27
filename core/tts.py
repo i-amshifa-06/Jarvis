@@ -84,22 +84,40 @@ def _play_np(samples, sample_rate: int) -> None:
     Accepts numpy arrays or PyTorch tensors.
     """
     global TTS_OUTPUT_DEVICE
-    sd.play(_to_numpy(samples), sample_rate, device=TTS_OUTPUT_DEVICE)
+    arr = _to_numpy(samples)
+    target_rate = sample_rate
+    if TTS_OUTPUT_DEVICE is not None:
+        try:
+            dev_info = sd.query_devices(TTS_OUTPUT_DEVICE)
+            dev_rate = int(dev_info.get("default_samplerate", 0))
+            if dev_rate > 0 and dev_rate != sample_rate:
+                try:
+                    sd.check_output_settings(device=TTS_OUTPUT_DEVICE, samplerate=sample_rate)
+                except Exception:
+                    # Device does not support sample_rate directly (e.g. WASAPI 48kHz vs 24kHz)
+                    target_len = int(len(arr) * dev_rate / sample_rate)
+                    arr = np.interp(
+                        np.linspace(0, len(arr), target_len, endpoint=False),
+                        np.arange(len(arr)),
+                        arr
+                    ).astype(np.float32)
+                    target_rate = dev_rate
+        except Exception:
+            pass
+    sd.play(arr, target_rate, device=TTS_OUTPUT_DEVICE)
     sd.wait()
 
 
 def _play_audio_bytes(audio_bytes: bytes) -> None:
     """Decode MP3/WAV/OGG bytes and play via sounddevice (uses miniaudio)."""
     import miniaudio
-    global TTS_OUTPUT_DEVICE
     decoded = miniaudio.decode(
         audio_bytes,
         output_format=miniaudio.SampleFormat.FLOAT32,
         nchannels=1,
     )
     samples = np.array(decoded.samples, dtype=np.float32)
-    sd.play(samples, decoded.sample_rate, device=TTS_OUTPUT_DEVICE)
-    sd.wait()
+    _play_np(samples, decoded.sample_rate)
 
 
 # ---------------------------------------------------------------------------

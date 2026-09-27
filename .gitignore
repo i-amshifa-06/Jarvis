@@ -3,18 +3,33 @@ config/api_keys.json
 config/certs/
 *.pem
 *.key
+.env
+.env.*
+!.env.example
 
 # ── Python ───────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
+*.pyo
+.pytest_cache/
 *.egg-info/
 .venv/
 venv/
 env/
 
-# ── Runtime state ────────────────────────────────────────────────────────
+# ── Local databases ──────────────────────────────────────────────────────
+*.db
+*.sqlite
+*.sqlite3
+
+# ── JARVIS runtime state ──────────────────────────────────────────────────
 memory/*.json
 *.log
+.autonomous/
+@AutomationLog.txt
+
+# ── Scratch/debug files ──────────────────────────────────────────────────
+scratch_*.py
 
 # ── Editor / OS ──────────────────────────────────────────────────────────
 .vscode/
@@ -23,4 +38,3 @@ Thumbs.db
 desktop.ini
 *.bak
 
-.env

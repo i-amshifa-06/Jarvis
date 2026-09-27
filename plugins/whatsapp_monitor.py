@@ -18,13 +18,24 @@ try:
 except ImportError:
     _send_whatsapp = None
 
-# Try importing winsdk for native Windows Notification reading
+# Try importing winrt (modern, Python 3.10-3.14+) or winsdk (legacy, Python <= 3.12) for native Windows Notification reading
+_WINRT_AVAILABLE = False
 try:
-    from winsdk.windows.ui.notifications.management import UserNotificationListener
-    from winsdk.windows.ui.notifications import NotificationKinds
-    _WINSDK_AVAILABLE = True
+    from winrt.windows.ui.notifications.management import UserNotificationListener
+    from winrt.windows.ui.notifications import NotificationKinds
+    import winrt.windows.foundation.collections  # Required for async collection iteration
+    import winrt.windows.applicationmodel  # Required for AppInfo metadata
+    _WINRT_AVAILABLE = True
 except ImportError:
-    _WINSDK_AVAILABLE = False
+    try:
+        from winsdk.windows.ui.notifications.management import UserNotificationListener
+        from winsdk.windows.ui.notifications import NotificationKinds
+        _WINRT_AVAILABLE = True
+    except ImportError:
+        _WINRT_AVAILABLE = False
+
+_WINSDK_AVAILABLE = _WINRT_AVAILABLE  # Backward-compatible alias
+
 
 
 PLUGIN = {
@@ -52,7 +63,7 @@ _replied_notification_ids = set()
 
 def _generate_dynamic_reply(sender, message):
     if not _GENAI_AVAILABLE:
-        return f"Hello, I am Jarvis, Deepak's AI assistant. He is currently busy. I will inform him that you messaged."
+        return f"Hello, I am Jarvis, Shifa's AI assistant. He is currently busy. I will inform him that you messaged."
         
     try:
         # Load API key from config
@@ -67,11 +78,11 @@ def _generate_dynamic_reply(sender, message):
         client = genai.Client(api_key=api_key)
         
         prompt = (
-            f"You are Jarvis, Deepak's personal AI assistant. Deepak is currently busy working. "
+            f"You are Jarvis, Shifa's personal AI assistant. Shifa is currently busy working. "
             f"You received a WhatsApp message from '{sender}' which says: '{message}'. "
-            f"Write a short, natural, and polite reply on Deepak's behalf. "
+            f"Write a short, natural, and polite reply on Shifa's behalf. "
             f"Acknowledge what they said. If it is an important update (like a meeting, emergency, or request), "
-            f"tell them you will convey it to Deepak immediately. "
+            f"tell them you will convey it to Shifa immediately. "
             f"Keep it under 2 sentences. Reply directly as Jarvis."
         )
         
@@ -82,7 +93,7 @@ def _generate_dynamic_reply(sender, message):
         return response.text.strip()
     except Exception as e:
         print(f"[WhatsApp Monitor] AI generation failed: {e}")
-        return f"Hello, I am Jarvis. Deepak is currently busy, but I will convey your message to him."
+        return f"Hello, I am Jarvis. Shifa is currently busy, but I will convey your message to her."
 
 async def _get_whatsapp_notifications():
     if not _WINSDK_AVAILABLE:
@@ -91,7 +102,9 @@ async def _get_whatsapp_notifications():
     listener = UserNotificationListener.current
     access = await listener.request_access_async()
     
-    if access != 1:  # 1 means Allowed
+    # 1 means Allowed (handle both integer 1 and UserNotificationListenerAccessStatus enum)
+    access_val = getattr(access, "value", access)
+    if access_val != 1:
         print("[WhatsApp Monitor] Windows Notification access denied by user/system.")
         return []
         
@@ -142,6 +155,13 @@ def _whatsapp_monitor_loop(player):
                     notif_id = notif["id"]
                     sender = notif["sender"]
                     message = notif["message"]
+                    
+                    # Store in WhatsApp message history
+                    try:
+                        import plugins.whatsapp_message_history as wmh
+                        wmh.store_notification(notif)
+                    except Exception as e:
+                        print(f"[WhatsApp Monitor] Failed to store in history: {e}")
                     
                     if notif_id not in _replied_notification_ids:
                         _replied_notification_ids.add(notif_id)
@@ -213,10 +233,10 @@ def run(parameters: dict, player=None, session_memory=None) -> str:
         _monitor_thread.start()
         
         missing_libs = []
-        if not _WINSDK_AVAILABLE:
-            missing_libs.append("winsdk")
+        if not _WINRT_AVAILABLE:
+            missing_libs.append("winrt-Windows.UI.Notifications.Management (or winsdk)")
         if not _GENAI_AVAILABLE:
-            missing_libs.append("google-generativeai")
+            missing_libs.append("google-genai")
             
         if missing_libs:
             return f"Monitoring started, but missing libraries: {', '.join(missing_libs)}. Run pip install."
